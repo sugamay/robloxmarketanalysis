@@ -118,11 +118,12 @@ def init_driver(headless: bool = True, disable_images: bool = True) -> webdriver
 def open_deals_page(driver: webdriver.Chrome, wait_timeout: int = 12) -> None:
     driver.get(DEFAULT_DEALS_URL)
     WebDriverWait(driver, wait_timeout).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    time.sleep(0.7)
+    time.sleep(2.0)
     logging.info("Loaded Rolimon's deals page.")
 
 
 VALID_GRADIENTS = [
+    "deal_bg_gradient_poor",
     "deal_bg_gradient_uncommon",
     "deal_bg_gradient_rare",
     "deal_bg_gradient_epic",
@@ -143,8 +144,23 @@ def _extract_item_id(url: str) -> Optional[str]:
     return digits[0] if digits else None
 
 
-def get_deals_via_selenium(driver: webdriver.Chrome) -> List[Deal]:
+def get_deals_via_selenium(driver: webdriver.Chrome, wait_for_deals: int = 8) -> List[Deal]:
     selector = ", ".join(f"div.{c}" for c in VALID_GRADIENTS)
+    try:
+        WebDriverWait(driver, wait_for_deals).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+        )
+    except Exception:
+        pass
+
+    # Small scroll to trigger lazy content
+    try:
+        driver.execute_script("window.scrollTo(0, 600);")
+        time.sleep(0.4)
+        driver.execute_script("window.scrollTo(0, 0);")
+    except Exception:
+        pass
+
     containers = driver.find_elements(By.CSS_SELECTOR, selector)
     deals: List[Deal] = []
 
@@ -193,6 +209,47 @@ def get_deals_via_selenium(driver: webdriver.Chrome) -> List[Deal]:
         except Exception:
             continue
 
+    if deals:
+        return deals
+
+    # Fallback to parsing the rendered HTML if DOM selection fails.
+    html = driver.page_source
+    return parse_deals_bs4(html)
+
+
+def parse_deals_bs4(html: str) -> List[Deal]:
+    soup = BeautifulSoup(html, "html.parser")
+    deals: List[Deal] = []
+    containers = soup.find_all("div", class_=lambda x: x and any(g in x for g in VALID_GRADIENTS))
+    for container in containers:
+        parent_a = container.find_parent("a")
+        url = parent_a["href"] if parent_a and "href" in parent_a.attrs else None
+        title_div = container.find("div", class_="deal-title")
+        title = title_div.get("title") if title_div else "Unknown"
+        info_div = container.find("div", class_="mt-1 rounded-bottom")
+        if not info_div or not url:
+            continue
+        rows = info_div.find_all("div", class_="d-flex justify-content-between")
+        data = {}
+        for row in rows:
+            header_div = row.find("div", class_="stat-header")
+            value_div = row.find("div", class_="stat-data")
+            if header_div and value_div:
+                header = header_div.get_text(strip=True)
+                value = value_div.get_text(strip=True)
+                data[header] = value
+        price = _to_int_from_text(data.get("Price", "0"))
+        item_id = _extract_item_id(url)
+        if not item_id:
+            continue
+        deals.append(
+            Deal(
+                item_id=item_id,
+                title=title,
+                price=price,
+                rolimons_url=url,
+            )
+        )
     return deals
 
 
@@ -433,6 +490,7 @@ def main_loop(
     prices_path: str,
     max_new: int,
     discover_only: bool,
+    debug_html: bool,
 ) -> None:
     driver = init_driver(headless=headless, disable_images=disable_images)
     try:
@@ -448,6 +506,15 @@ def main_loop(
 
             deals = get_deals_via_selenium(driver)
             logging.info("Discovered %s deals from Rolimon's.", len(deals))
+            if debug_html and not deals:
+                try:
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    debug_path = f"debug_deals_{ts}.html"
+                    with open(debug_path, "w", encoding="utf-8") as fh:
+                        fh.write(driver.page_source)
+                    logging.info("Saved debug HTML to %s", debug_path)
+                except Exception as exc:
+                    logging.warning("Failed to save debug HTML: %s", exc)
 
             watchlist, new_count = upsert_watchlist(watchlist_path, deals, max_new=max_new)
             if new_count:
@@ -481,6 +548,7 @@ if __name__ == "__main__":
     parser.add_argument("--prices", default="prices.csv", help="Path to price history CSV.")
     parser.add_argument("--max-new", type=int, default=50, help="Max new items to add per run (default 50).")
     parser.add_argument("--discover-only", action="store_true", help="Only update watchlist; skip price logging.")
+    parser.add_argument("--debug-html", action="store_true", help="Save page HTML if no deals are found.")
     parser.set_defaults(headless=True, disable_images=True)
 
     args = parser.parse_args()
@@ -494,6 +562,7 @@ if __name__ == "__main__":
             prices_path=args.prices,
             max_new=args.max_new,
             discover_only=args.discover_only,
+            debug_html=args.debug_html,
         )
     except Exception as exc:
         logging.exception("Fatal error in main: %s", exc)
