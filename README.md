@@ -15,7 +15,7 @@ pip install selenium webdriver-manager beautifulsoup4
 
 ## Usage
 ```bash
-python fastSnipe.py
+python market_trends.py
 ```
 
 ## Options
@@ -26,6 +26,12 @@ python fastSnipe.py
 - `--prices prices.csv` price history file path
 - `--max-new 50` maximum new items to add per run
 - `--discover-only` only update the watchlist and skip price logging
+
+## Environment
+This tool does not require a `.env` file or Roblox cookies. It only reads public market data.
+
+## License
+MIT
 
 ## Outputs
 - `watchlist.csv` contains discovered items (id, title, URLs, timestamps)
