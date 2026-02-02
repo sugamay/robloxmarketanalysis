@@ -52,6 +52,7 @@ PRICES_HEADERS = [
     "title",
     "price",
     "source_url",
+    "signal",
 ]
 
 logging.basicConfig(
@@ -332,6 +333,7 @@ def log_price_snapshots(prices_path: str, items: List[WatchItem], price_map: Dic
         price = price_map.get(item.item_id)
         if not price:
             continue
+        signal = "HOLD"
         rows.append(
             {
                 "timestamp_utc": timestamp,
@@ -339,6 +341,7 @@ def log_price_snapshots(prices_path: str, items: List[WatchItem], price_map: Dic
                 "title": item.title,
                 "price": str(price),
                 "source_url": item.rolimons_url,
+                "signal": signal,
             }
         )
     if rows:
@@ -368,6 +371,18 @@ def _load_recent_prices(prices_path: str, lookback_hours: int = 24) -> Dict[str,
     return grouped
 
 
+def _compute_signal(first_price: int, last_price: int) -> str:
+    if first_price <= 0:
+        return "HOLD"
+    delta = last_price - first_price
+    pct = (delta / first_price) * 100
+    if pct >= 10:
+        return "UPTREND"
+    if pct <= -10:
+        return "DOWNTREND"
+    return "STABLE"
+
+
 def print_trend_summary(prices_path: str, lookback_hours: int = 24, limit: int = 10) -> None:
     grouped = _load_recent_prices(prices_path, lookback_hours=lookback_hours)
     if not grouped:
@@ -380,18 +395,20 @@ def print_trend_summary(prices_path: str, lookback_hours: int = 24, limit: int =
         first_ts, first_price, _ = entries[0]
         delta = last_price - first_price
         pct = (delta / first_price * 100) if first_price else 0.0
-        summaries.append((abs(pct), item_id, title, last_price, delta, pct, first_ts, last_ts))
+        signal = _compute_signal(first_price, last_price)
+        summaries.append((abs(pct), item_id, title, last_price, delta, pct, first_ts, last_ts, signal))
 
     summaries.sort(reverse=True, key=lambda s: s[0])
     logging.info("Trend summary (last %s hours, top %s movers):", lookback_hours, limit)
-    for _, item_id, title, last_price, delta, pct, first_ts, last_ts in summaries[:limit]:
+    for _, item_id, title, last_price, delta, pct, first_ts, last_ts, signal in summaries[:limit]:
         logging.info(
-            "  %s (%s): %s Robux (%+d, %+0.1f%%) [%s -> %s]",
+            "  %s (%s): %s Robux (%+d, %+0.1f%%, %s) [%s -> %s]",
             title,
             item_id,
             last_price,
             delta,
             pct,
+            signal,
             first_ts.isoformat(timespec="minutes"),
             last_ts.isoformat(timespec="minutes"),
         )
